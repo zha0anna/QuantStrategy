@@ -90,30 +90,59 @@ sns.heatmap(factor_corr, annot=True, cmap='vlag', center=0, fmt=".2f")
 plt.title("Factor Correlation Matrix (Orthogonality Check)")
 plt.show()
 
-# Selection Logic with Silo Enforcement
-ic_summary['abs_IR'] = ic_summary['IR'].abs()
-ranked_candidates = ic_summary.sort_values('abs_IR', ascending=False)
+#Factor Selection
+# Define factor groups (economic categories)
+factor_groups = {
+    "momentum": ["f_mom_1m", "f_mom_6m", "f_sma_50_ratio", "f_dist_52w_high"],
+    "reversal": ["f_zscore_20d", "f_rsi_14"],   # removed f_log_ret (too noisy)
+    "volatility": ["f_vol_20d", "f_day_range"],
+    "volume": ["f_vol_shock", "f_dollar_volume"]
+}
+
+# Only keep factors that actually exist
+available_factors = set(ic_summary.index)
 
 final_selection = []
-correlation_threshold = 0.3 # Strict threshold to ensure thematic diversity
-
 print("\n--- Selection Log ---")
-for factor in ranked_candidates.index:
-    if len(final_selection) >= 3:
-        break
+
+correlation_threshold = 0.5
+for group_name, group_factors in factor_groups.items():
+    valid = [f for f in group_factors if f in available_factors]
     
-    if not final_selection:
-        final_selection.append(factor)
-        print(f"Selected: {factor:<15} (Top Absolute IR)")
+    if not valid:
+        continue
+
+    pos_candidates = [f for f in valid if ic_summary.loc[f, "IR"] > 0]
+
+    if pos_candidates:
+        best = ic_summary.loc[pos_candidates, "IR"].idxmax()
     else:
-        # Check if current candidate is too correlated with already selected ones
-        is_redundant = any(abs(factor_corr.loc[factor, f]) > correlation_threshold for f in final_selection)
-        
-        if not is_redundant:
-            final_selection.append(factor)
-            print(f"Selected: {factor:<15} (Unique/Orthogonal Signal)")
-        else:
-            offending = [f for f in final_selection if abs(factor_corr.loc[factor, f]) > correlation_threshold][0]
-            print(f"Skipped:  {factor:<15} (Redundant with {offending}: {factor_corr.loc[factor, offending]:.2f})")
+        best = ic_summary.loc[valid, "IR"].idxmax()
+
+    is_redundant = any(
+        abs(factor_corr.loc[best, existing]) > correlation_threshold
+        for existing in final_selection
+    )
+
+    if not is_redundant:
+        final_selection.append(best)
+        print(f"Selected from {group_name:<12}: {best}")
+    else:
+        print(f"Skipped {best} (too correlated with existing factors)")
+
+# Ensure at least 3 factors
+# If less than 3, fill with best remaining positive IR factors
+if len(final_selection) < 3:
+    remaining = ic_summary[~ic_summary.index.isin(final_selection)]
+    remaining = remaining[remaining["IR"] > 0].sort_values("IR", ascending=False)
+
+    for f in remaining.index:
+        if len(final_selection) >= 3:
+            break
+        final_selection.append(f)
+        print(f"Added extra factor: {f}")
 
 print(f"\nFINAL STRATEGY FACTORS: {final_selection}")
+
+# Save to file for backtesting
+pd.Series(final_selection).to_csv("selected_factors.csv", index=False, header=False)
